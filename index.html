@@ -1,0 +1,1887 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TraceCam — AR Camera Lucida & Drawing Overlay</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Inter & JetBrains Mono for Camera HUD aesthetic -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        hud: {
+                            bg: 'rgba(12, 12, 16, 0.82)',
+                            border: 'rgba(255, 255, 255, 0.12)',
+                            amber: '#f59e0b',
+                            amberLight: '#fbbf24',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        /* Prevent elastic bounce & pull-to-refresh on mobile while dragging/pinching */
+        html, body {
+            overscroll-behavior: none;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+            background-color: #09090b;
+            color: #f4f4f5;
+            overflow: hidden;
+            height: 100%;
+            width: 100%;
+        }
+
+        /* Custom HUD Range Sliders */
+        input[type="range"].hud-slider {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 999px;
+            outline: none;
+        }
+
+        input[type="range"].hud-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #f59e0b;
+            border: 2px solid #ffffff;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+            cursor: pointer;
+            transition: transform 0.1s ease, background-color 0.15s ease;
+        }
+
+        input[type="range"].hud-slider::-webkit-slider-thumb:active {
+            transform: scale(1.2);
+            background: #fbbf24;
+        }
+
+        input[type="range"].hud-slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #f59e0b;
+            border: 2px solid #ffffff;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+            cursor: pointer;
+        }
+
+        /* Studio Desk Fallback Background Pattern */
+        .studio-desk-bg {
+            background-color: #27241d;
+            background-image: 
+                radial-gradient(circle at 50% 42%, rgba(255, 248, 231, 0.08) 0%, rgba(0, 0, 0, 0.65) 100%),
+                linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px),
+                linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px);
+            background-size: 100% 100%, 24px 24px, 24px 24px;
+        }
+
+        /* Sketchbook Paper Texture */
+        .sketch-paper {
+            background-color: #f8f5ec;
+            background-image: 
+                radial-gradient(#d8d2c5 0.65px, transparent 0.65px),
+                radial-gradient(#e5dfd3 0.65px, #f8f5ec 0.65px);
+            background-size: 26px 26px;
+            background-position: 0 0, 13px 13px;
+            box-shadow: 
+                0 20px 50px rgba(0, 0, 0, 0.65),
+                0 2px 6px rgba(0, 0, 0, 0.3),
+                inset 0 0 32px rgba(214, 203, 182, 0.45);
+        }
+
+        /* Glassmorphism HUD Panel */
+        .hud-glass {
+            background: rgba(14, 14, 18, 0.84);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.11);
+        }
+
+        /* Shutter Flash Animation */
+        @keyframes flashAnim {
+            0% { opacity: 0.95; }
+            100% { opacity: 0; }
+        }
+        .camera-flash {
+            animation: flashAnim 0.35s ease-out forwards;
+        }
+
+        /* Custom subtle scrollbars for preset strip */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body class="relative w-full h-full select-none overflow-hidden">
+
+    <!-- =================================================================== -->
+    <!-- 1. VIEWPORT CONTAINER (CAMERA FEED + FALLBACK STUDIO DESK + OVERLAY) -->
+    <!-- =================================================================== -->
+    <main id="viewportContainer" class="relative w-full h-full overflow-hidden flex items-center justify-center bg-zinc-950">
+        
+        <!-- Live HTML5 Video Element -->
+        <video id="cameraVideo" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover z-0 hidden"></video>
+
+        <!-- Graceful Fallback: Simulated Studio Drawing Desk & Sketchpad -->
+        <div id="fallbackStudio" class="absolute inset-0 w-full h-full studio-desk-bg flex flex-col items-center justify-center p-4 sm:p-8 z-0">
+            <!-- Ambient Lamp Glow -->
+            <div class="pointer-events-none absolute -top-24 left-1/2 -translate-x-1/2 w-96 h-96 rounded-full bg-amber-400/10 blur-3xl"></div>
+            
+            <!-- Physical Sketchbook Sheet Simulation -->
+            <div class="relative w-full max-w-[360px] sm:max-w-[440px] aspect-[3/4] sketch-paper rounded-lg flex flex-col justify-between p-5 border border-stone-300/80 transition-transform duration-300">
+                <!-- Top Binder / Perforation Marks -->
+                <div class="flex justify-between items-center px-2 opacity-40">
+                    <div class="w-3 h-3 rounded-full bg-stone-700 shadow-inner"></div>
+                    <div class="w-3 h-3 rounded-full bg-stone-700 shadow-inner"></div>
+                    <div class="w-3 h-3 rounded-full bg-stone-700 shadow-inner"></div>
+                    <div class="w-3 h-3 rounded-full bg-stone-700 shadow-inner"></div>
+                    <div class="w-3 h-3 rounded-full bg-stone-700 shadow-inner"></div>
+                    <div class="w-3 h-3 rounded-full bg-stone-700 shadow-inner"></div>
+                </div>
+
+                <!-- Subtle watermark on paper -->
+                <div class="text-center pointer-events-none my-auto opacity-25 select-none">
+                    <i class="fa-solid fa-pencil-ruler text-stone-500 text-3xl mb-2"></i>
+                    <p class="font-mono text-[11px] uppercase tracking-widest text-stone-600 font-semibold">Studio Sketchpad Surface</p>
+                    <p class="font-sans text-[10px] text-stone-500 mt-0.5">Position or trace overlay directly on canvas</p>
+                </div>
+
+                <!-- Simulated Graphite Pencil & Eraser on Corner -->
+                <div class="flex justify-between items-end opacity-60 pointer-events-none">
+                    <span class="font-mono text-[9px] text-stone-500 tracking-wider">A4 · 180 GSM COLD PRESS</span>
+                    <div class="flex items-center space-x-1.5">
+                        <div class="w-16 h-1.5 rounded-l-full bg-amber-600 shadow-sm"></div>
+                        <div class="w-3 h-1.5 bg-stone-300"></div>
+                        <div class="w-2 h-1.5 rounded-r-full bg-rose-400"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Interactive Gesture Layer & Transformed Overlay Image -->
+        <div id="gestureArea" class="absolute inset-0 w-full h-full z-10 overflow-hidden cursor-grab active:cursor-grabbing flex items-center justify-center">
+            <!-- Wrapper that receives X, Y, Scale, Rotation, Flip transforms -->
+            <div id="overlayWrapper" class="relative origin-center pointer-events-none will-change-transform transition-opacity duration-75">
+                <!-- Processed Canvas representing the user's reference image with filters applied -->
+                <canvas id="overlayCanvas" class="block max-w-none shadow-2xl rounded-sm"></canvas>
+                
+                <!-- Subtle Selection Frame Indicator (hidden when locked or holding compare) -->
+                <div id="overlayBoundingBox" class="absolute -inset-1 border border-amber-400/50 rounded-sm pointer-events-none transition-opacity duration-300">
+                    <!-- Corner Brackets -->
+                    <div class="absolute -top-1 -left-1 w-3 h-3 border-t-2 border-l-2 border-amber-400"></div>
+                    <div class="absolute -top-1 -right-1 w-3 h-3 border-t-2 border-r-2 border-amber-400"></div>
+                    <div class="absolute -bottom-1 -left-1 w-3 h-3 border-b-2 border-l-2 border-amber-400"></div>
+                    <div class="absolute -bottom-1 -right-1 w-3 h-3 border-b-2 border-r-2 border-amber-400"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Optional Alignment Grid Overlay (3x3 / 4x4 / Crosshair) -->
+        <div id="gridOverlay" class="pointer-events-none absolute inset-0 w-full h-full z-20 hidden">
+            <svg id="gridSvg" class="w-full h-full" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+
+        <!-- Camera Shutter White Flash Effect -->
+        <div id="shutterFlash" class="pointer-events-none fixed inset-0 bg-white z-50 hidden"></div>
+    </main>
+
+    <!-- =================================================================== -->
+    <!-- 2. TOP CAMERA HUD BAR (Hidden when Screen Locked)                   -->
+    <!-- =================================================================== -->
+    <header id="topHudBar" class="fixed top-0 inset-x-0 z-30 p-3 sm:p-4 flex items-center justify-between pointer-events-none transition-all duration-300">
+        <!-- Left Brand & Live Telemetry Badge -->
+        <div class="flex items-center gap-2 pointer-events-auto">
+            <div class="hud-glass px-3 py-1.5 rounded-full flex items-center gap-2 shadow-lg">
+                <span id="cameraStatusDot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                <span class="font-mono text-xs font-semibold tracking-wider uppercase text-zinc-100">TraceCam</span>
+                <span id="hudModeLabel" class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">STUDIO</span>
+            </div>
+
+            <!-- Quick Telemetry Readout (Opacity & Scale) -->
+            <div class="hidden sm:flex hud-glass px-2.5 py-1.5 rounded-full items-center gap-3 font-mono text-[11px] text-zinc-300">
+                <span>OPACITY <strong id="hudOpacityReadout" class="text-amber-400">45%</strong></span>
+                <span class="text-zinc-600">|</span>
+                <span>ZOOM <strong id="hudScaleReadout" class="text-amber-400">100%</strong></span>
+                <span class="text-zinc-600">|</span>
+                <span>ROT <strong id="hudRotReadout" class="text-amber-400">0°</strong></span>
+            </div>
+        </div>
+
+        <!-- Right Quick Camera & Aid Actions -->
+        <div class="flex items-center gap-2 pointer-events-auto">
+            <!-- Grid Cycle Button -->
+            <button id="btnGridToggle" type="button" title="Cycle Alignment Grid" class="hud-glass w-10 h-10 rounded-full flex items-center justify-center text-zinc-200 hover:text-amber-400 active:scale-95 transition shadow-lg">
+                <i class="fa-solid fa-border-all text-sm"></i>
+            </button>
+
+            <!-- Torch / Flashlight Button -->
+            <button id="btnTorchToggle" type="button" title="Toggle Flashlight / Torch" class="hud-glass w-10 h-10 rounded-full flex items-center justify-center text-zinc-400 hover:text-amber-400 active:scale-95 transition shadow-lg">
+                <i class="fa-solid fa-bolt text-sm"></i>
+            </button>
+
+            <!-- Switch Rear/Front Camera OR Toggle Camera vs Studio Mode -->
+            <button id="btnSwitchCamera" type="button" title="Switch Camera / Retry Camera" class="hud-glass w-10 h-10 rounded-full flex items-center justify-center text-zinc-200 hover:text-amber-400 active:scale-95 transition shadow-lg">
+                <i class="fa-solid fa-camera-rotate text-sm"></i>
+            </button>
+
+            <!-- Toggle Studio Desk Simulation Mode -->
+            <button id="btnStudioToggle" type="button" title="Toggle Studio Sketchpad Surface vs Live Camera" class="hud-glass px-3 h-10 rounded-full flex items-center gap-1.5 text-xs font-medium text-zinc-200 hover:text-amber-400 active:scale-95 transition shadow-lg">
+                <i id="studioToggleIcon" class="fa-solid fa-video text-xs text-amber-400"></i>
+                <span id="studioToggleText" class="hidden md:inline">Cam / Desk</span>
+            </button>
+
+            <!-- Lock Screen Button (Essential for Tracing) -->
+            <button id="btnLockScreen" type="button" title="Lock Overlay for Tracing" class="bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold px-3.5 h-10 rounded-full flex items-center gap-1.5 text-xs active:scale-95 transition shadow-lg shadow-amber-500/20">
+                <i class="fa-solid fa-lock text-xs"></i>
+                <span>Lock</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- =================================================================== -->
+    <!-- 3. MINIMAL FLOATING UNLOCK PILL (Shown ONLY when Screen is Locked)  -->
+    <!-- =================================================================== -->
+    <div id="lockedFloatingControls" class="fixed top-4 right-4 z-50 hidden items-center gap-2">
+        <div class="hud-glass px-3 py-1.5 rounded-full flex items-center gap-2 border border-emerald-500/40 shadow-xl">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+            <span class="font-mono text-[11px] text-emerald-300 uppercase tracking-wider">Touch Locked for Tracing</span>
+        </div>
+        <button id="btnUnlockScreen" type="button" class="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold px-4 py-2 rounded-full flex items-center gap-2 text-xs shadow-xl shadow-emerald-500/25 active:scale-95 transition">
+            <i class="fa-solid fa-lock-open"></i>
+            <span>Unlock</span>
+        </button>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- 4. FLOATING QUICK ACTION BAR (Hold to Compare + Shutter + Collapse) -->
+    <!-- =================================================================== -->
+    <div id="floatingQuickBar" class="fixed inset-x-0 bottom-0 z-30 flex flex-col pointer-events-none transition-transform duration-300">
+        
+        <!-- Primary Action Strip (Always accessible above the drawer) -->
+        <div class="w-full max-w-xl mx-auto px-4 pb-3 flex items-center justify-between pointer-events-auto">
+            
+            <!-- Left: Hold to Compare Button -->
+            <button id="btnHoldCompare" type="button" class="hud-glass px-3.5 py-2.5 rounded-full flex items-center gap-2 text-xs font-medium text-zinc-200 active:bg-amber-500 active:text-zinc-950 active:border-amber-400 transition shadow-lg select-none">
+                <i class="fa-regular fa-eye-slash text-amber-400"></i>
+                <span>Hold Compare</span>
+            </button>
+
+            <!-- Center: Camera Shutter Button + Composite Mode Pill -->
+            <div class="flex items-center gap-2">
+                <!-- Snapshot Capture Button -->
+                <button id="btnShutter" type="button" title="Capture Snapshot" class="group relative w-16 h-16 rounded-full p-1 bg-white/20 backdrop-blur-md border-2 border-white flex items-center justify-center active:scale-90 transition shadow-xl">
+                    <div class="w-full h-full rounded-full bg-white group-hover:bg-amber-400 transition flex items-center justify-center">
+                        <i class="fa-solid fa-camera text-zinc-900 text-lg"></i>
+                    </div>
+                </button>
+            </div>
+
+            <!-- Right: Collapse / Expand Control Drawer Toggle -->
+            <button id="btnToggleDrawer" type="button" class="hud-glass px-3.5 py-2.5 rounded-full flex items-center gap-2 text-xs font-medium text-zinc-200 hover:text-amber-400 active:scale-95 transition shadow-lg">
+                <span id="drawerToggleLabel">Controls</span>
+                <i id="drawerToggleIcon" class="fa-solid fa-chevron-down text-amber-400 transition-transform duration-300"></i>
+            </button>
+        </div>
+
+        <!-- =============================================================== -->
+        <!-- 5. COLLAPSIBLE BOTTOM CONTROL DRAWER                            -->
+        <!-- =============================================================== -->
+        <section id="controlDrawer" class="w-full max-w-xl mx-auto hud-glass rounded-t-3xl border-b-0 shadow-2xl pointer-events-auto transition-all duration-300 overflow-hidden">
+            
+            <!-- Drawer Navigation Tabs -->
+            <div class="flex items-center justify-between border-b border-white/10 px-3 pt-2.5 pb-2">
+                <div class="flex items-center gap-1 bg-zinc-900/90 p-1 rounded-xl border border-white/5 w-full">
+                    <button type="button" data-tab="tabTransform" class="drawer-tab flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 bg-amber-500 text-zinc-950 shadow">
+                        <i class="fa-solid fa-sliders"></i>
+                        <span>Transform</span>
+                    </button>
+                    <button type="button" data-tab="tabFilters" class="drawer-tab flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 text-zinc-400 hover:text-zinc-200">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                        <span>Tracing Aid</span>
+                    </button>
+                    <button type="button" data-tab="tabSource" class="drawer-tab flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 text-zinc-400 hover:text-zinc-200">
+                        <i class="fa-regular fa-image"></i>
+                        <span>Image / Presets</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Tab Content Container -->
+            <div class="p-4 space-y-3.5 max-h-[38vh] overflow-y-auto no-scrollbar">
+
+                <!-- TAB 1: TRANSFORM & OPACITY SLIDERS -->
+                <div id="tabTransform" class="tab-pane space-y-3">
+                    <!-- Opacity Slider -->
+                    <div class="space-y-1">
+                        <div class="flex justify-between items-center text-xs">
+                            <label for="sliderOpacity" class="text-zinc-300 font-medium flex items-center gap-1.5">
+                                <i class="fa-solid fa-circle-half-stroke text-amber-400 text-[11px]"></i>
+                                <span>Overlay Opacity</span>
+                            </label>
+                            <span id="valOpacity" class="font-mono text-amber-400 font-semibold">45%</span>
+                        </div>
+                        <input id="sliderOpacity" type="range" min="0" max="100" value="45" class="hud-slider">
+                    </div>
+
+                    <!-- Scale / Zoom Slider -->
+                    <div class="space-y-1">
+                        <div class="flex justify-between items-center text-xs">
+                            <label for="sliderScale" class="text-zinc-300 font-medium flex items-center gap-1.5">
+                                <i class="fa-solid fa-magnifying-glass-plus text-amber-400 text-[11px]"></i>
+                                <span>Scale / Zoom</span>
+                            </label>
+                            <span id="valScale" class="font-mono text-amber-400 font-semibold">100%</span>
+                        </div>
+                        <input id="sliderScale" type="range" min="10" max="300" value="100" class="hud-slider">
+                    </div>
+
+                    <!-- Rotation Slider -->
+                    <div class="space-y-1">
+                        <div class="flex justify-between items-center text-xs">
+                            <label for="sliderRotation" class="text-zinc-300 font-medium flex items-center gap-1.5">
+                                <i class="fa-solid fa-rotate text-amber-400 text-[11px]"></i>
+                                <span>Rotation Angle</span>
+                            </label>
+                            <span id="valRotation" class="font-mono text-amber-400 font-semibold">0°</span>
+                        </div>
+                        <input id="sliderRotation" type="range" min="-180" max="180" value="0" class="hud-slider">
+                    </div>
+
+                    <!-- Quick Transform Actions Row -->
+                    <div class="pt-1 flex items-center gap-2">
+                        <button id="btnFlipH" type="button" class="flex-1 py-2 px-3 rounded-xl bg-zinc-800/90 hover:bg-zinc-700 border border-white/10 text-xs font-medium text-zinc-200 flex items-center justify-center gap-1.5 active:scale-95 transition">
+                            <i class="fa-solid fa-arrows-left-right text-amber-400"></i>
+                            <span>Flip Horiz</span>
+                        </button>
+                        <button id="btnFlipV" type="button" class="flex-1 py-2 px-3 rounded-xl bg-zinc-800/90 hover:bg-zinc-700 border border-white/10 text-xs font-medium text-zinc-200 flex items-center justify-center gap-1.5 active:scale-95 transition">
+                            <i class="fa-solid fa-arrows-up-down text-amber-400"></i>
+                            <span>Flip Vert</span>
+                        </button>
+                        <button id="btnResetTransform" type="button" class="flex-1 py-2 px-3 rounded-xl bg-zinc-800/90 hover:bg-zinc-700 border border-white/10 text-xs font-medium text-amber-300 flex items-center justify-center gap-1.5 active:scale-95 transition">
+                            <i class="fa-solid fa-rotate-left"></i>
+                            <span>Reset</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- TAB 2: DRAWING & TRACING AID FILTER MODES -->
+                <div id="tabFilters" class="tab-pane hidden space-y-3.5">
+                    <!-- Filter Mode Selector Pills -->
+                    <div>
+                        <label class="block text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-2">Overlay Filter Mode</label>
+                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                            <button type="button" data-filter="original" class="filter-btn py-2 px-2.5 rounded-xl border text-xs font-medium flex items-center justify-center gap-1.5 transition bg-amber-500/20 border-amber-500 text-amber-300">
+                                <i class="fa-solid fa-image"></i>
+                                <span>Original</span>
+                            </button>
+                            <button type="button" data-filter="grayscale" class="filter-btn py-2 px-2.5 rounded-xl border border-white/10 bg-zinc-800/80 text-xs font-medium text-zinc-300 flex items-center justify-center gap-1.5 transition hover:border-white/25">
+                                <i class="fa-solid fa-droplet-slash"></i>
+                                <span>Grayscale</span>
+                            </button>
+                            <button type="button" data-filter="contrast" class="filter-btn py-2 px-2.5 rounded-xl border border-white/10 bg-zinc-800/80 text-xs font-medium text-zinc-300 flex items-center justify-center gap-1.5 transition hover:border-white/25">
+                                <i class="fa-solid fa-sun"></i>
+                                <span>Hi-Contrast</span>
+                            </button>
+                            <button type="button" data-filter="sobel" class="filter-btn py-2 px-2.5 rounded-xl border border-white/10 bg-zinc-800/80 text-xs font-medium text-zinc-300 flex items-center justify-center gap-1.5 transition hover:border-white/25">
+                                <i class="fa-solid fa-pen-nib"></i>
+                                <span>Line Sketch</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Dynamic Sub-controls for Line Art / Edge Sketch (Sobel) -->
+                    <div id="sobelControls" class="p-3 rounded-2xl bg-zinc-900/90 border border-amber-500/30 space-y-2.5 hidden">
+                        <div class="flex justify-between items-center text-xs">
+                            <label for="sliderEdgeSensitivity" class="text-amber-300 font-medium flex items-center gap-1.5">
+                                <i class="fa-solid fa-Sliders text-[11px]"></i>
+                                <span>Edge Line Detail</span>
+                            </label>
+                            <span id="valEdgeSensitivity" class="font-mono text-amber-400">60%</span>
+                        </div>
+                        <input id="sliderEdgeSensitivity" type="range" min="15" max="95" value="60" class="hud-slider">
+
+                        <div class="flex items-center gap-2 pt-1">
+                            <button id="btnToggleTransparentPaper" type="button" class="flex-1 py-1.5 px-2.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-[11px] font-medium text-amber-200 flex items-center justify-center gap-1.5 transition">
+                                <i class="fa-solid fa-layer-group"></i>
+                                <span id="transparentLinesLabel">Clear Background: ON</span>
+                            </button>
+                            <button id="btnToggleInvertLines" type="button" class="flex-1 py-1.5 px-2.5 rounded-lg bg-zinc-800 border border-white/10 text-[11px] font-medium text-zinc-300 flex items-center justify-center gap-1.5 transition">
+                                <i class="fa-solid fa-circle-half-stroke"></i>
+                                <span id="invertLinesLabel">Ink Color: Dark</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Capture Composite Mode Option -->
+                    <div class="flex items-center justify-between pt-1 border-t border-white/10 text-xs">
+                        <span class="text-zinc-400 flex items-center gap-1.5">
+                            <i class="fa-solid fa-camera-retro text-amber-400"></i>
+                            <span>Shutter Snapshot Mode:</span>
+                        </span>
+                        <div class="flex items-center gap-1 bg-zinc-900 p-1 rounded-lg border border-white/10">
+                            <button type="button" id="btnCaptureComposite" class="px-2.5 py-1 rounded-md bg-amber-500 text-zinc-950 font-semibold text-[11px] transition">
+                                Cam + Overlay
+                            </button>
+                            <button type="button" id="btnCaptureClean" class="px-2.5 py-1 rounded-md text-zinc-400 hover:text-zinc-200 font-medium text-[11px] transition">
+                                Camera Only
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 3: IMAGE UPLOAD & BUILT-IN QUICK PRESETS -->
+                <div id="tabSource" class="tab-pane hidden space-y-3">
+                    <!-- Custom Image Upload Button -->
+                    <div class="flex items-center gap-2">
+                        <label for="fileUploadInput" class="flex-1 cursor-pointer py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 active:scale-95 transition">
+                            <i class="fa-solid fa-upload"></i>
+                            <span>Upload Reference Photo from Device</span>
+                        </label>
+                        <input id="fileUploadInput" type="file" accept="image/*" class="hidden">
+                    </div>
+
+                    <!-- Built-in Quick-Test Presets -->
+                    <div>
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="text-[11px] font-mono uppercase tracking-wider text-zinc-400">Built-In Practice Reference Presets</span>
+                            <span class="text-[10px] text-zinc-500">Tap to load immediately</span>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2.5">
+                            <!-- Preset 1: Geometric Portrait -->
+                            <button type="button" data-preset="portrait" class="preset-btn group p-2 rounded-xl bg-zinc-800/90 hover:bg-zinc-800 border border-amber-500/50 flex flex-col items-center gap-1.5 transition active:scale-95">
+                                <div class="w-10 h-10 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-400 group-hover:scale-110 transition">
+                                    <i class="fa-solid fa-user-astronaut text-base"></i>
+                                </div>
+                                <span class="text-[11px] font-medium text-zinc-200">Geo Portrait</span>
+                            </button>
+
+                            <!-- Preset 2: Architecture Sketch -->
+                            <button type="button" data-preset="architecture" class="preset-btn group p-2 rounded-xl bg-zinc-800/90 hover:bg-zinc-800 border border-white/10 flex flex-col items-center gap-1.5 transition active:scale-95">
+                                <div class="w-10 h-10 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-400 group-hover:scale-110 transition">
+                                    <i class="fa-solid fa-archway text-base"></i>
+                                </div>
+                                <span class="text-[11px] font-medium text-zinc-200">Architecture</span>
+                            </button>
+
+                            <!-- Preset 3: Botanical Leaf -->
+                            <button type="button" data-preset="botanical" class="preset-btn group p-2 rounded-xl bg-zinc-800/90 hover:bg-zinc-800 border border-white/10 flex flex-col items-center gap-1.5 transition active:scale-95">
+                                <div class="w-10 h-10 rounded-lg bg-amber-500/15 flex items-center justify-center text-amber-400 group-hover:scale-110 transition">
+                                    <i class="fa-solid fa-leaf text-base"></i>
+                                </div>
+                                <span class="text-[11px] font-medium text-zinc-200">Botanical Leaf</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- 6. SNAPSHOT PREVIEW & DOWNLOAD MODAL                                -->
+    <!-- =================================================================== -->
+    <div id="snapshotModal" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-md hidden items-center justify-center p-4">
+        <div class="hud-glass w-full max-w-md rounded-3xl overflow-hidden border border-white/15 shadow-2xl flex flex-col max-h-[90vh]">
+            <!-- Modal Header -->
+            <div class="px-5 py-3.5 border-b border-white/10 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-camera-retro text-amber-400"></i>
+                    <h3 class="font-semibold text-sm text-zinc-100">Captured AR Snapshot</h3>
+                </div>
+                <button id="btnCloseSnapshotModal" type="button" class="w-8 h-8 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 flex items-center justify-center transition">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <!-- Captured Image Preview Area -->
+            <div class="p-4 flex-1 overflow-auto flex items-center justify-center bg-zinc-950/60">
+                <img id="snapshotPreviewImg" src="" alt="Captured AR Composite" class="max-h-[58vh] w-auto rounded-xl border border-white/10 shadow-lg object-contain">
+            </div>
+
+            <!-- Metadata & Download Action Footer -->
+            <div class="p-4 border-t border-white/10 flex items-center justify-between gap-3 bg-zinc-900/60">
+                <div class="font-mono text-[11px] text-zinc-400">
+                    <div id="snapshotMetaMode" class="text-amber-400 font-semibold">MODE: CAMERA + OVERLAY</div>
+                    <div id="snapshotMetaRes">1280 × 720 PNG</div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button id="btnRetakeSnapshot" type="button" class="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-200 transition">
+                        Discard
+                    </button>
+                    <a id="btnDownloadSnapshot" href="#" download="tracecam-capture.png" class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs flex items-center gap-1.5 shadow-lg shadow-amber-500/20 transition">
+                        <i class="fa-solid fa-download"></i>
+                        <span>Save PNG</span>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- 7. NON-INTRUSIVE HUD TOAST NOTIFICATION                             -->
+    <!-- =================================================================== -->
+    <div id="hudToast" class="fixed top-16 left-1/2 -translate-x-1/2 z-50 pointer-events-none opacity-0 -translate-y-2 transition-all duration-300">
+        <div class="hud-glass px-4 py-2 rounded-full border border-amber-500/40 shadow-xl flex items-center gap-2 text-xs font-medium text-zinc-100">
+            <i id="hudToastIcon" class="fa-solid fa-circle-info text-amber-400"></i>
+            <span id="hudToastText">Ready</span>
+        </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- 8. APPLICATION LOGIC (CAMERA, PRESETS, SOBEL FILTER, GESTURES)      -->
+    <!-- =================================================================== -->
+    <script>
+        (function () {
+            'use strict';
+
+            // -----------------------------------------------------------------
+            // Application State
+            // -----------------------------------------------------------------
+            const state = {
+                // Camera state
+                stream: null,
+                facingMode: 'environment', // 'environment' (Rear) or 'user' (Front)
+                isCameraActive: false,
+                useStudioFallback: false,
+                torchEnabled: false,
+
+                // Overlay Transform state
+                x: 0,
+                y: 0,
+                scale: 1.0,       // 0.1 to 3.0
+                rotation: 0,      // -180 to 180 deg
+                opacity: 0.45,    // 0.0 to 1.0
+                flipH: 1,         // 1 or -1
+                flipV: 1,         // 1 or -1
+
+                // Image & Filter state
+                sourceCanvas: document.createElement('canvas'), // Holds clean source image
+                filterMode: 'original', // 'original' | 'grayscale' | 'contrast' | 'sobel'
+                edgeSensitivity: 60,    // 15 to 95
+                transparentPaper: true, // When in sobel mode, make background transparent for easy tracing
+                invertLines: false,     // Dark ink lines vs White glowing lines
+
+                // Tracing & UI Aid state
+                gridMode: 0,      // 0: Off, 1: 3x3 Thirds, 2: 4x4 Grid, 3: Diagonals + Crosshair
+                isLocked: false,  // Locks all touch manipulation & hides UI
+                isDrawerOpen: true,
+                isHoldingCompare: false,
+                captureWithOverlay: true,
+
+                // Multi-touch & Pointer Gesture tracking
+                isDragging: false,
+                dragStartX: 0,
+                dragStartY: 0,
+                initialX: 0,
+                initialY: 0,
+                initialPinchDist: 0,
+                initialPinchScale: 1,
+                initialPinchAngle: 0,
+                initialPinchRotation: 0
+            };
+
+            // -----------------------------------------------------------------
+            // DOM Elements Reference
+            // -----------------------------------------------------------------
+            const els = {
+                viewportContainer: document.getElementById('viewportContainer'),
+                cameraVideo: document.getElementById('cameraVideo'),
+                fallbackStudio: document.getElementById('fallbackStudio'),
+                gestureArea: document.getElementById('gestureArea'),
+                overlayWrapper: document.getElementById('overlayWrapper'),
+                overlayCanvas: document.getElementById('overlayCanvas'),
+                overlayBoundingBox: document.getElementById('overlayBoundingBox'),
+                gridOverlay: document.getElementById('gridOverlay'),
+                gridSvg: document.getElementById('gridSvg'),
+                shutterFlash: document.getElementById('shutterFlash'),
+
+                // Top HUD
+                topHudBar: document.getElementById('topHudBar'),
+                cameraStatusDot: document.getElementById('cameraStatusDot'),
+                hudModeLabel: document.getElementById('hudModeLabel'),
+                hudOpacityReadout: document.getElementById('hudOpacityReadout'),
+                hudScaleReadout: document.getElementById('hudScaleReadout'),
+                hudRotReadout: document.getElementById('hudRotReadout'),
+                btnGridToggle: document.getElementById('btnGridToggle'),
+                btnTorchToggle: document.getElementById('btnTorchToggle'),
+                btnSwitchCamera: document.getElementById('btnSwitchCamera'),
+                btnStudioToggle: document.getElementById('btnStudioToggle'),
+                studioToggleIcon: document.getElementById('studioToggleIcon'),
+                btnLockScreen: document.getElementById('btnLockScreen'),
+
+                // Lock Floating Pill
+                lockedFloatingControls: document.getElementById('lockedFloatingControls'),
+                btnUnlockScreen: document.getElementById('btnUnlockScreen'),
+
+                // Bottom Bar & Drawer
+                floatingQuickBar: document.getElementById('floatingQuickBar'),
+                btnHoldCompare: document.getElementById('btnHoldCompare'),
+                btnShutter: document.getElementById('btnShutter'),
+                btnToggleDrawer: document.getElementById('btnToggleDrawer'),
+                drawerToggleLabel: document.getElementById('drawerToggleLabel'),
+                drawerToggleIcon: document.getElementById('drawerToggleIcon'),
+                controlDrawer: document.getElementById('controlDrawer'),
+                drawerTabs: document.querySelectorAll('.drawer-tab'),
+                tabPanes: document.querySelectorAll('.tab-pane'),
+
+                // Sliders & Transform Buttons
+                sliderOpacity: document.getElementById('sliderOpacity'),
+                valOpacity: document.getElementById('valOpacity'),
+                sliderScale: document.getElementById('sliderScale'),
+                valScale: document.getElementById('valScale'),
+                sliderRotation: document.getElementById('sliderRotation'),
+                valRotation: document.getElementById('valRotation'),
+                btnFlipH: document.getElementById('btnFlipH'),
+                btnFlipV: document.getElementById('btnFlipV'),
+                btnResetTransform: document.getElementById('btnResetTransform'),
+
+                // Filter Controls
+                filterBtns: document.querySelectorAll('.filter-btn'),
+                sobelControls: document.getElementById('sobelControls'),
+                sliderEdgeSensitivity: document.getElementById('sliderEdgeSensitivity'),
+                valEdgeSensitivity: document.getElementById('valEdgeSensitivity'),
+                btnToggleTransparentPaper: document.getElementById('btnToggleTransparentPaper'),
+                transparentLinesLabel: document.getElementById('transparentLinesLabel'),
+                btnToggleInvertLines: document.getElementById('btnToggleInvertLines'),
+                invertLinesLabel: document.getElementById('invertLinesLabel'),
+                btnCaptureComposite: document.getElementById('btnCaptureComposite'),
+                btnCaptureClean: document.getElementById('btnCaptureClean'),
+
+                // Source & Presets
+                fileUploadInput: document.getElementById('fileUploadInput'),
+                presetBtns: document.querySelectorAll('.preset-btn'),
+
+                // Snapshot Modal
+                snapshotModal: document.getElementById('snapshotModal'),
+                btnCloseSnapshotModal: document.getElementById('btnCloseSnapshotModal'),
+                snapshotPreviewImg: document.getElementById('snapshotPreviewImg'),
+                snapshotMetaMode: document.getElementById('snapshotMetaMode'),
+                snapshotMetaRes: document.getElementById('snapshotMetaRes'),
+                btnRetakeSnapshot: document.getElementById('btnRetakeSnapshot'),
+                btnDownloadSnapshot: document.getElementById('btnDownloadSnapshot'),
+
+                // Toast
+                hudToast: document.getElementById('hudToast'),
+                hudToastIcon: document.getElementById('hudToastIcon'),
+                hudToastText: document.getElementById('hudToastText')
+            };
+
+            let toastTimeout = null;
+            let boundingBoxTimeout = null;
+
+            // -----------------------------------------------------------------
+            // HUD Toast Notification Helper
+            // -----------------------------------------------------------------
+            function showToast(message, iconClass = 'fa-solid fa-circle-info') {
+                els.hudToastIcon.className = `${iconClass} text-amber-400`;
+                els.hudToastText.textContent = message;
+                els.hudToast.classList.remove('opacity-0', '-translate-y-2');
+                els.hudToast.classList.add('opacity-100', 'translate-y-0');
+
+                if (toastTimeout) clearTimeout(toastTimeout);
+                toastTimeout = setTimeout(() => {
+                    els.hudToast.classList.add('opacity-0', '-translate-y-2');
+                    els.hudToast.classList.remove('opacity-100', 'translate-y-0');
+                }, 2400);
+            }
+
+            // Temporarily highlight bounding box when moving/scaling
+            function flashBoundingBox() {
+                if (state.isLocked) return;
+                els.overlayBoundingBox.style.opacity = '1';
+                if (boundingBoxTimeout) clearTimeout(boundingBoxTimeout);
+                boundingBoxTimeout = setTimeout(() => {
+                    els.overlayBoundingBox.style.opacity = '0.25';
+                }, 1200);
+            }
+
+            // -----------------------------------------------------------------
+            // 1. LIVE CAMERA STREAM & FALLBACK STUDIO MANAGEMENT
+            // -----------------------------------------------------------------
+            async function initCamera() {
+                // Stop any existing tracks first
+                stopCameraStream();
+
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    activateStudioFallback('Camera API unavailable — Studio Sketchpad active');
+                    return;
+                }
+
+                try {
+                    const constraints = {
+                        audio: false,
+                        video: {
+                            facingMode: { ideal: state.facingMode },
+                            width: { ideal: 1920 },
+                            height: { ideal: 1080 }
+                        }
+                    };
+
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    state.stream = stream;
+                    state.isCameraActive = true;
+                    state.useStudioFallback = false;
+                    state.torchEnabled = false;
+
+                    els.cameraVideo.srcObject = stream;
+                    await els.cameraVideo.play();
+
+                    // Mirror video display if using front-facing camera
+                    els.cameraVideo.style.transform = state.facingMode === 'user' ? 'scaleX(-1)' : 'none';
+
+                    updateViewportSourceUI();
+                    showToast(
+                        state.facingMode === 'environment' ? 'Rear Camera Live' : 'Front Camera Live',
+                        'fa-solid fa-video'
+                    );
+                } catch (err) {
+                    console.warn('Camera access declined or unavailable, using Studio Desk fallback:', err);
+                    activateStudioFallback('Studio Sketchpad Mode (Camera permission declined or unavailable)');
+                }
+            }
+
+            function stopCameraStream() {
+                if (state.stream) {
+                    state.stream.getTracks().forEach(track => track.stop());
+                    state.stream = null;
+                }
+                state.isCameraActive = false;
+                state.torchEnabled = false;
+            }
+
+            function activateStudioFallback(reasonMsg) {
+                state.useStudioFallback = true;
+                updateViewportSourceUI();
+                if (reasonMsg) {
+                    showToast(reasonMsg, 'fa-solid fa-compass-drafting');
+                }
+            }
+
+            function updateViewportSourceUI() {
+                const showLiveVideo = state.isCameraActive && !state.useStudioFallback;
+                if (showLiveVideo) {
+                    els.cameraVideo.classList.remove('hidden');
+                    els.fallbackStudio.classList.add('hidden');
+                    els.cameraStatusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse';
+                    els.hudModeLabel.textContent = state.facingMode === 'environment' ? 'REAR CAM' : 'FRONT CAM';
+                    els.studioToggleIcon.className = 'fa-solid fa-book-open text-xs text-amber-400';
+                } else {
+                    els.cameraVideo.classList.add('hidden');
+                    els.fallbackStudio.classList.remove('hidden');
+                    els.cameraStatusDot.className = 'w-2 h-2 rounded-full bg-amber-400';
+                    els.hudModeLabel.textContent = 'STUDIO PAD';
+                    els.studioToggleIcon.className = 'fa-solid fa-video text-xs text-amber-400';
+                }
+            }
+
+            // Torch / Flashlight Control
+            async function toggleTorch() {
+                if (!state.stream || !state.isCameraActive || state.useStudioFallback) {
+                    showToast('Switch to Live Rear Camera to use Torch', 'fa-solid fa-bolt');
+                    return;
+                }
+                const videoTrack = state.stream.getVideoTracks()[0];
+                if (!videoTrack) return;
+
+                try {
+                    const capabilities = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
+                    if (!capabilities.torch) {
+                        showToast('Torch not supported on this camera lens', 'fa-solid fa-bolt-lightning');
+                        return;
+                    }
+                    state.torchEnabled = !state.torchEnabled;
+                    await videoTrack.applyConstraints({
+                        advanced: [{ torch: state.torchEnabled }]
+                    });
+                    els.btnTorchToggle.classList.toggle('text-amber-400', state.torchEnabled);
+                    els.btnTorchToggle.classList.toggle('bg-amber-500/20', state.torchEnabled);
+                    showToast(state.torchEnabled ? 'Flashlight ON' : 'Flashlight OFF', 'fa-solid fa-bolt');
+                } catch (e) {
+                    showToast('Torch control unavailable on this device', 'fa-solid fa-bolt');
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // 2. PROCEDURAL HIGH-RES BUILT-IN PRACTICE PRESET ILLUSTRATIONS
+            // -----------------------------------------------------------------
+            function loadBuiltInPreset(presetType) {
+                const w = 640;
+                const h = 640;
+                state.sourceCanvas.width = w;
+                state.sourceCanvas.height = h;
+                const ctx = state.sourceCanvas.getContext('2d');
+
+                // Clear and set warm parchment base so Original/Contrast/Sobel all look great
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, w, h);
+
+                ctx.strokeStyle = '#18181b';
+                ctx.fillStyle = '#27272a';
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+
+                if (presetType === 'portrait') {
+                    drawGeometricPortraitPreset(ctx, w, h);
+                } else if (presetType === 'architecture') {
+                    drawArchitecturePreset(ctx, w, h);
+                } else if (presetType === 'botanical') {
+                    drawBotanicalPreset(ctx, w, h);
+                }
+
+                // Highlight selected preset button
+                els.presetBtns.forEach(btn => {
+                    const isMatch = btn.dataset.preset === presetType;
+                    btn.classList.toggle('border-amber-500/60', isMatch);
+                    btn.classList.toggle('border-white/10', !isMatch);
+                });
+
+                processAndRenderOverlay();
+                flashBoundingBox();
+            }
+
+            // Preset 1: Loomis / Asaro Planar Geometric Portrait Bust
+            function drawGeometricPortraitPreset(ctx, w, h) {
+                ctx.save();
+                ctx.translate(w / 2, h / 2);
+
+                // Subtle tonal shading planes for realistic contrast & Sobel edges
+                ctx.fillStyle = '#e4e4e7';
+                ctx.beginPath();
+                ctx.ellipse(0, -35, 135, 165, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Shadow side of face (Right plane)
+                ctx.fillStyle = '#a1a1aa';
+                ctx.beginPath();
+                ctx.moveTo(0, -200);
+                ctx.lineTo(125, -90);
+                ctx.lineTo(105, 55);
+                ctx.lineTo(35, 155);
+                ctx.lineTo(0, 165);
+                ctx.closePath();
+                ctx.fill();
+
+                // Cheekbone & Jaw planar facets
+                ctx.fillStyle = '#71717a';
+                ctx.beginPath();
+                ctx.moveTo(45, -10);
+                ctx.lineTo(118, -25);
+                ctx.lineTo(95, 70);
+                ctx.lineTo(35, 155);
+                ctx.lineTo(25, 65);
+                ctx.closePath();
+                ctx.fill();
+
+                // Primary Structural Line Art
+                ctx.strokeStyle = '#18181b';
+                ctx.lineWidth = 4.5;
+
+                // Cranium Circle & Loomis Crosslines
+                ctx.beginPath();
+                ctx.arc(0, -55, 135, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // Jawline & Chin Contour
+                ctx.beginPath();
+                ctx.moveTo(-130, -35);
+                ctx.lineTo(-108, 68);
+                ctx.lineTo(-35, 160);
+                ctx.lineTo(35, 160);
+                ctx.lineTo(108, 68);
+                ctx.lineTo(130, -35);
+                ctx.stroke();
+
+                // Center Vertical Axis & Brow/Nose/Lips Construction Lines
+                ctx.lineWidth = 2.5;
+                ctx.beginPath();
+                ctx.moveTo(0, -210);
+                ctx.lineTo(0, 240);
+                // Brow Line
+                ctx.moveTo(-132, -45);
+                ctx.lineTo(132, -45);
+                // Nose Base Line
+                ctx.moveTo(-118, 35);
+                ctx.lineTo(118, 35);
+                // Mouth Line
+                ctx.moveTo(-85, 95);
+                ctx.lineTo(85, 95);
+                ctx.stroke();
+
+                // Nose Wedge Pyramid
+                ctx.lineWidth = 4;
+                ctx.fillStyle = '#d4d4d8';
+                ctx.beginPath();
+                ctx.moveTo(0, -45);
+                ctx.lineTo(-26, 28);
+                ctx.lineTo(0, 42);
+                ctx.lineTo(26, 28);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                // Eye Sockets & Geometric Eyes
+                [-58, 58].forEach(cx => {
+                    ctx.beginPath();
+                    ctx.moveTo(cx - 32, -22);
+                    ctx.lineTo(cx, -34);
+                    ctx.lineTo(cx + 32, -22);
+                    ctx.lineTo(cx, -10);
+                    ctx.closePath();
+                    ctx.stroke();
+
+                    ctx.beginPath();
+                    ctx.arc(cx, -22, 10, 0, Math.PI * 2);
+                    ctx.fillStyle = '#27272a';
+                    ctx.fill();
+                });
+
+                // Planar Lips
+                ctx.lineWidth = 3.5;
+                ctx.beginPath();
+                ctx.moveTo(-44, 95);
+                ctx.lineTo(-15, 82);
+                ctx.lineTo(0, 88);
+                ctx.lineTo(15, 82);
+                ctx.lineTo(44, 95);
+                ctx.lineTo(20, 114);
+                ctx.lineTo(-20, 114);
+                ctx.closePath();
+                ctx.stroke();
+
+                // Neck & Collarbone Cylinders
+                ctx.lineWidth = 4.5;
+                ctx.beginPath();
+                ctx.moveTo(-70, 125);
+                ctx.lineTo(-85, 245);
+                ctx.moveTo(70, 125);
+                ctx.lineTo(85, 245);
+                // Sternocleidomastoid muscle lines
+                ctx.moveTo(-62, 130);
+                ctx.lineTo(0, 235);
+                ctx.moveTo(62, 130);
+                ctx.lineTo(0, 235);
+                // Clavicle
+                ctx.moveTo(-185, 235);
+                ctx.lineTo(185, 235);
+                ctx.stroke();
+
+                ctx.restore();
+            }
+
+            // Preset 2: Classical Perspective Archway & Dome Architecture Study
+            function drawArchitecturePreset(ctx, w, h) {
+                ctx.save();
+                // Tonal sky and shadow blocks
+                ctx.fillStyle = '#e4e4e7';
+                ctx.fillRect(70, 70, w - 140, h - 140);
+
+                // Deep Archway Shadow
+                ctx.fillStyle = '#52525b';
+                ctx.beginPath();
+                ctx.arc(w / 2, 310, 115, Math.PI, 0, false);
+                ctx.lineTo(w / 2 + 115, 530);
+                ctx.lineTo(w / 2 - 115, 530);
+                ctx.closePath();
+                ctx.fill();
+
+                // Inner Receding Perspective Arch
+                ctx.fillStyle = '#d4d4d8';
+                ctx.beginPath();
+                ctx.arc(w / 2, 340, 68, Math.PI, 0, false);
+                ctx.lineTo(w / 2 + 68, 530);
+                ctx.lineTo(w / 2 - 68, 530);
+                ctx.closePath();
+                ctx.fill();
+
+                ctx.strokeStyle = '#18181b';
+                ctx.lineWidth = 4;
+
+                // Classical Pediment Triangle Roof
+                ctx.fillStyle = '#a1a1aa';
+                ctx.beginPath();
+                ctx.moveTo(60, 175);
+                ctx.lineTo(w / 2, 75);
+                ctx.lineTo(w - 60, 175);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                // Entablature & Cornice Horizontal Beams
+                ctx.fillStyle = '#f4f4f5';
+                ctx.fillRect(75, 175, w - 150, 32);
+                ctx.strokeRect(75, 175, w - 150, 32);
+
+                // Main Outer Pillars & Columns
+                const cols = [95, 155, w - 195, w - 135];
+                cols.forEach(cx => {
+                    ctx.fillStyle = '#e4e4e7';
+                    ctx.fillRect(cx, 207, 40, 323);
+                    ctx.strokeRect(cx, 207, 40, 323);
+
+                    // Column Fluting Vertical Lines
+                    ctx.lineWidth = 1.8;
+                    ctx.beginPath();
+                    ctx.moveTo(cx + 13, 215);
+                    ctx.lineTo(cx + 13, 520);
+                    ctx.moveTo(cx + 27, 215);
+                    ctx.lineTo(cx + 27, 520);
+                    ctx.stroke();
+                    ctx.lineWidth = 4;
+                });
+
+                // Grand Central Archway & Keystone
+                ctx.beginPath();
+                ctx.arc(w / 2, 310, 115, Math.PI, 0, false);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(w / 2, 310, 140, Math.PI, 0, false);
+                ctx.stroke();
+
+                // Perspective Floor Tiles converging to central vanishing point
+                const vpX = w / 2;
+                const vpY = 395;
+                ctx.lineWidth = 2.2;
+                for (let i = -4; i <= 4; i++) {
+                    ctx.beginPath();
+                    ctx.moveTo(vpX, vpY);
+                    ctx.lineTo(vpX + i * 70, 580);
+                    ctx.stroke();
+                }
+                [440, 470, 505, 545, 580].forEach(py => {
+                    ctx.beginPath();
+                    ctx.moveTo(60, py);
+                    ctx.lineTo(w - 60, py);
+                    ctx.stroke();
+                });
+
+                ctx.restore();
+            }
+
+            // Preset 3: Botanical Monstera & Fern Leaf Study
+            function drawBotanicalPreset(ctx, w, h) {
+                ctx.save();
+                ctx.translate(w / 2, h / 2 + 20);
+
+                // Organic Monstera Leaf Silhouette with shading
+                ctx.fillStyle = '#a1a1aa';
+                ctx.strokeStyle = '#18181b';
+                ctx.lineWidth = 4.5;
+
+                ctx.beginPath();
+                ctx.moveTo(0, 210);
+                ctx.bezierCurveTo(-190, 170, -240, -40, -140, -170);
+                ctx.bezierCurveTo(-70, -240, 0, -255, 0, -265);
+                ctx.bezierCurveTo(0, -255, 70, -240, 140, -170);
+                ctx.bezierCurveTo(240, -40, 190, 170, 0, 210);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                // Characteristic Monstera Fenestrations (Cutouts)
+                ctx.fillStyle = '#ffffff';
+                const cutouts = [
+                    { x: -115, y: -95, rx: 65, ry: 20, rot: 0.35 },
+                    { x: -135, y: -15, rx: 75, ry: 22, rot: 0.2 },
+                    { x: -110, y: 70, rx: 60, ry: 18, rot: 0.1 },
+                    { x: 115, y: -95, rx: 65, ry: 20, rot: -0.35 },
+                    { x: 135, y: -15, rx: 75, ry: 22, rot: -0.2 },
+                    { x: 110, y: 70, rx: 60, ry: 18, rot: -0.1 }
+                ];
+
+                cutouts.forEach(c => {
+                    ctx.beginPath();
+                    ctx.ellipse(c.x, c.y, c.rx, c.ry, c.rot, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
+                });
+
+                // Central Stem & Veins
+                ctx.lineWidth = 5;
+                ctx.beginPath();
+                ctx.moveTo(0, -255);
+                ctx.quadraticCurveTo(6, 20, 0, 260);
+                ctx.stroke();
+
+                ctx.lineWidth = 3;
+                [-140, -60, 20, 100].forEach(vy => {
+                    ctx.beginPath();
+                    ctx.moveTo(0, vy);
+                    ctx.quadraticCurveTo(-60, vy - 25, -135, vy - 55);
+                    ctx.moveTo(0, vy);
+                    ctx.quadraticCurveTo(60, vy - 25, 135, vy - 55);
+                    ctx.stroke();
+                });
+
+                ctx.restore();
+            }
+
+            // -----------------------------------------------------------------
+            // 3. IMAGE PROCESSING & SOBEL EDGE DETECTION (HTML5 CANVAS)
+            // -----------------------------------------------------------------
+            function processAndRenderOverlay() {
+                const sw = state.sourceCanvas.width;
+                const sh = state.sourceCanvas.height;
+                if (!sw || !sh) return;
+
+                els.overlayCanvas.width = sw;
+                els.overlayCanvas.height = sh;
+                const ctx = els.overlayCanvas.getContext('2d');
+                const srcCtx = state.sourceCanvas.getContext('2d');
+
+                if (state.filterMode === 'original') {
+                    ctx.clearRect(0, 0, sw, sh);
+                    ctx.drawImage(state.sourceCanvas, 0, 0);
+                    return;
+                }
+
+                const srcData = srcCtx.getImageData(0, 0, sw, sh);
+                const srcPixels = srcData.data;
+                const outData = ctx.createImageData(sw, sh);
+                const outPixels = outData.data;
+
+                if (state.filterMode === 'grayscale' || state.filterMode === 'contrast') {
+                    const isContrast = state.filterMode === 'contrast';
+                    const contrastFactor = isContrast ? 2.1 : 1.0;
+
+                    for (let i = 0; i < srcPixels.length; i += 4) {
+                        const r = srcPixels[i];
+                        const g = srcPixels[i + 1];
+                        const b = srcPixels[i + 2];
+                        const a = srcPixels[i + 3];
+
+                        // Luminance formula
+                        let lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                        if (isContrast) {
+                            lum = Math.min(255, Math.max(0, (lum - 128) * contrastFactor + 128));
+                        }
+
+                        outPixels[i] = lum;
+                        outPixels[i + 1] = lum;
+                        outPixels[i + 2] = lum;
+                        outPixels[i + 3] = a;
+                    }
+                    ctx.putImageData(outData, 0, 0);
+                    return;
+                }
+
+                // SOBEL EDGE DETECTION ALGORITHM FOR TRACEABLE LINE ART
+                if (state.filterMode === 'sobel') {
+                    // 1. Convert to grayscale buffer first
+                    const gray = new Float32Array(sw * sh);
+                    for (let i = 0, p = 0; i < srcPixels.length; i += 4, p++) {
+                        gray[p] = 0.299 * srcPixels[i] + 0.587 * srcPixels[i + 1] + 0.114 * srcPixels[i + 2];
+                    }
+
+                    // Map sensitivity (15..95) to threshold (180..20)
+                    const threshold = 215 - (state.edgeSensitivity * 2.0);
+                    const transparentBg = state.transparentPaper;
+                    const invertInk = state.invertLines;
+
+                    for (let y = 1; y < sh - 1; y++) {
+                        for (let x = 1; x < sw - 1; x++) {
+                            const idx = y * sw + x;
+
+                            // 3x3 Neighborhood
+                            const p00 = gray[idx - sw - 1];
+                            const p01 = gray[idx - sw];
+                            const p02 = gray[idx - sw + 1];
+                            const p10 = gray[idx - 1];
+                            const p12 = gray[idx + 1];
+                            const p20 = gray[idx + sw - 1];
+                            const p21 = gray[idx + sw];
+                            const p22 = gray[idx + sw + 1];
+
+                            // Sobel X and Y Kernels
+                            const gx = (-1 * p00) + (1 * p02) +
+                                       (-2 * p10) + (2 * p12) +
+                                       (-1 * p20) + (1 * p22);
+
+                            const gy = (-1 * p00) + (-2 * p01) + (-1 * p02) +
+                                       (1 * p20)  + (2 * p21)  + (1 * p22);
+
+                            const mag = Math.min(255, Math.hypot(gx, gy));
+                            const outIdx = idx * 4;
+                            const isEdge = mag >= threshold;
+
+                            if (isEdge) {
+                                // Smooth edge strength
+                                const edgeStrength = Math.min(255, ((mag - threshold) / (255 - threshold + 1)) * 255 + 95);
+                                if (invertInk) {
+                                    // Glowing white / amber-tinted sketch lines
+                                    outPixels[outIdx] = 255;
+                                    outPixels[outIdx + 1] = 248;
+                                    outPixels[outIdx + 2] = 220;
+                                    outPixels[outIdx + 3] = edgeStrength;
+                                } else {
+                                    // Crisp dark graphite ink lines
+                                    outPixels[outIdx] = 18;
+                                    outPixels[outIdx + 1] = 18;
+                                    outPixels[outIdx + 2] = 24;
+                                    outPixels[outIdx + 3] = edgeStrength;
+                                }
+                            } else {
+                                // Non-edge background pixel
+                                if (transparentBg) {
+                                    outPixels[outIdx] = 0;
+                                    outPixels[outIdx + 1] = 0;
+                                    outPixels[outIdx + 2] = 0;
+                                    outPixels[outIdx + 3] = 0;
+                                } else {
+                                    const bgVal = invertInk ? 18 : 252;
+                                    outPixels[outIdx] = bgVal;
+                                    outPixels[outIdx + 1] = bgVal;
+                                    outPixels[outIdx + 2] = bgVal;
+                                    outPixels[outIdx + 3] = 255;
+                                }
+                            }
+                        }
+                    }
+                    ctx.putImageData(outData, 0, 0);
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // 4. OVERLAY TRANSFORM & UI SYNCHRONIZATION
+            // -----------------------------------------------------------------
+            function updateOverlayTransform() {
+                const effectiveOpacity = state.isHoldingCompare ? 0 : state.opacity;
+                els.overlayWrapper.style.opacity = effectiveOpacity;
+
+                const sx = state.scale * state.flipH;
+                const sy = state.scale * state.flipV;
+                els.overlayWrapper.style.transform =
+                    `translate3d(${state.x}px, ${state.y}px, 0) rotate(${state.rotation}deg) scale(${sx}, ${sy})`;
+
+                // Sync sliders & numeric telemetry readouts
+                const opacityPct = Math.round(state.opacity * 100);
+                const scalePct = Math.round(state.scale * 100);
+                const rotDeg = Math.round(state.rotation);
+
+                els.sliderOpacity.value = opacityPct;
+                els.valOpacity.textContent = `${opacityPct}%`;
+                els.hudOpacityReadout.textContent = `${opacityPct}%`;
+
+                els.sliderScale.value = scalePct;
+                els.valScale.textContent = `${scalePct}%`;
+                els.hudScaleReadout.textContent = `${scalePct}%`;
+
+                els.sliderRotation.value = rotDeg;
+                els.valRotation.textContent = `${rotDeg}°`;
+                els.hudRotReadout.textContent = `${rotDeg}°`;
+            }
+
+            function resetTransform() {
+                // Fit nicely to mobile/desktop viewport
+                const vw = els.viewportContainer.clientWidth || window.innerWidth;
+                const vh = els.viewportContainer.clientHeight || window.innerHeight;
+                const sw = state.sourceCanvas.width || 640;
+                const sh = state.sourceCanvas.height || 640;
+
+                const targetSize = Math.min(vw, vh) * 0.62;
+                const autoScale = Math.min(2.5, Math.max(0.2, targetSize / Math.max(sw, sh)));
+
+                state.x = 0;
+                state.y = -20;
+                state.scale = parseFloat(autoScale.toFixed(2));
+                state.rotation = 0;
+                state.flipH = 1;
+                state.flipV = 1;
+
+                updateOverlayTransform();
+                flashBoundingBox();
+            }
+
+            // -----------------------------------------------------------------
+            // 5. TOUCH & MOUSE GESTURE ENGINE (DRAG, PINCH-ZOOM, 2-FINGER ROTATE)
+            // -----------------------------------------------------------------
+            function getTouchDistance(t1, t2) {
+                return Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+            }
+
+            function getTouchAngle(t1, t2) {
+                return Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * (180 / Math.PI);
+            }
+
+            function setupGestureListeners() {
+                const area = els.gestureArea;
+
+                // Mouse Drag Support
+                area.addEventListener('mousedown', (e) => {
+                    if (state.isLocked || e.button !== 0) return;
+                    state.isDragging = true;
+                    state.dragStartX = e.clientX;
+                    state.dragStartY = e.clientY;
+                    state.initialX = state.x;
+                    state.initialY = state.y;
+                    flashBoundingBox();
+                });
+
+                window.addEventListener('mousemove', (e) => {
+                    if (!state.isDragging || state.isLocked) return;
+                    const dx = e.clientX - state.dragStartX;
+                    const dy = e.clientY - state.dragStartY;
+                    state.x = state.initialX + dx;
+                    state.y = state.initialY + dy;
+                    updateOverlayTransform();
+                });
+
+                window.addEventListener('mouseup', () => {
+                    state.isDragging = false;
+                });
+
+                // Mouse Wheel Zoom Support (with Shift to Rotate)
+                area.addEventListener('wheel', (e) => {
+                    if (state.isLocked) return;
+                    e.preventDefault();
+                    if (e.shiftKey) {
+                        const rotStep = e.deltaY > 0 ? 4 : -4;
+                        let nextRot = state.rotation + rotStep;
+                        if (nextRot > 180) nextRot -= 360;
+                        if (nextRot < -180) nextRot += 360;
+                        state.rotation = nextRot;
+                    } else {
+                        const zoomFactor = e.deltaY < 0 ? 1.06 : 0.94;
+                        state.scale = Math.min(3.0, Math.max(0.1, state.scale * zoomFactor));
+                    }
+                    updateOverlayTransform();
+                    flashBoundingBox();
+                }, { passive: false });
+
+                // Mobile Touch Support (1-finger pan, 2-finger pinch-zoom + rotate)
+                area.addEventListener('touchstart', (e) => {
+                    if (state.isLocked) return;
+                    if (e.touches.length === 1) {
+                        state.isDragging = true;
+                        state.dragStartX = e.touches[0].clientX;
+                        state.dragStartY = e.touches[0].clientY;
+                        state.initialX = state.x;
+                        state.initialY = state.y;
+                        flashBoundingBox();
+                    } else if (e.touches.length === 2) {
+                        state.isDragging = false;
+                        state.initialPinchDist = getTouchDistance(e.touches[0], e.touches[1]);
+                        state.initialPinchScale = state.scale;
+                        state.initialPinchAngle = getTouchAngle(e.touches[0], e.touches[1]);
+                        state.initialPinchRotation = state.rotation;
+                        flashBoundingBox();
+                    }
+                }, { passive: true });
+
+                area.addEventListener('touchmove', (e) => {
+                    if (state.isLocked) return;
+                    e.preventDefault();
+
+                    if (e.touches.length === 1 && state.isDragging) {
+                        const dx = e.touches[0].clientX - state.dragStartX;
+                        const dy = e.touches[0].clientY - state.dragStartY;
+                        state.x = state.initialX + dx;
+                        state.y = state.initialY + dy;
+                        updateOverlayTransform();
+                    } else if (e.touches.length === 2 && state.initialPinchDist > 0) {
+                        const currentDist = getTouchDistance(e.touches[0], e.touches[1]);
+                        const scaleRatio = currentDist / state.initialPinchDist;
+                        state.scale = Math.min(3.0, Math.max(0.1, state.initialPinchScale * scaleRatio));
+
+                        const currentAngle = getTouchAngle(e.touches[0], e.touches[1]);
+                        let angleDelta = currentAngle - state.initialPinchAngle;
+                        let newRot = state.initialPinchRotation + angleDelta;
+                        // Normalize between -180 and 180
+                        while (newRot > 180) newRot -= 360;
+                        while (newRot < -180) newRot += 360;
+                        state.rotation = newRot;
+
+                        updateOverlayTransform();
+                    }
+                }, { passive: false });
+
+                area.addEventListener('touchend', (e) => {
+                    if (state.isLocked) return;
+                    if (e.touches.length === 0) {
+                        state.isDragging = false;
+                    } else if (e.touches.length === 1) {
+                        // Smooth transition back to 1-finger drag after releasing one finger
+                        state.isDragging = true;
+                        state.dragStartX = e.touches[0].clientX;
+                        state.dragStartY = e.touches[0].clientY;
+                        state.initialX = state.x;
+                        state.initialY = state.y;
+                    }
+                });
+            }
+
+            // -----------------------------------------------------------------
+            // 6. DRAWING ALIGNMENT GRID GENERATOR
+            // -----------------------------------------------------------------
+            function cycleGridMode() {
+                state.gridMode = (state.gridMode + 1) % 4;
+                renderGridSvg();
+
+                const labels = ['Alignment Grid: OFF', 'Grid: 3×3 Rule of Thirds', 'Grid: 4×4 Precision', 'Grid: Center Crosshair'];
+                showToast(labels[state.gridMode], 'fa-solid fa-border-all');
+                els.btnGridToggle.classList.toggle('text-amber-400', state.gridMode > 0);
+                els.btnGridToggle.classList.toggle('border-amber-500/40', state.gridMode > 0);
+            }
+
+            function renderGridSvg() {
+                if (state.gridMode === 0) {
+                    els.gridOverlay.classList.add('hidden');
+                    return;
+                }
+                els.gridOverlay.classList.remove('hidden');
+
+                let linesHtml = '';
+                const strokeColor = 'rgba(251, 191, 36, 0.45)';
+
+                if (state.gridMode === 1) {
+                    // 3x3 Rule of Thirds
+                    [33.33, 66.66].forEach(pos => {
+                        linesHtml += `<line x1="${pos}%" y1="0%" x2="${pos}%" y2="100%" stroke="${strokeColor}" stroke-width="1" />`;
+                        linesHtml += `<line x1="0%" y1="${pos}%" x2="100%" y2="${pos}%" stroke="${strokeColor}" stroke-width="1" />`;
+                    });
+                } else if (state.gridMode === 2) {
+                    // 4x4 Grid
+                    [25, 50, 75].forEach(pos => {
+                        const dash = pos === 50 ? '' : 'stroke-dasharray="4 4"';
+                        linesHtml += `<line x1="${pos}%" y1="0%" x2="${pos}%" y2="100%" stroke="${strokeColor}" stroke-width="1" ${dash} />`;
+                        linesHtml += `<line x1="0%" y1="${pos}%" x2="100%" y2="${pos}%" stroke="${strokeColor}" stroke-width="1" ${dash} />`;
+                    });
+                } else if (state.gridMode === 3) {
+                    // Diagonals & Center Target Crosshair
+                    linesHtml += `<line x1="0%" y1="0%" x2="100%" y2="100%" stroke="${strokeColor}" stroke-width="1" stroke-dasharray="6 6" />`;
+                    linesHtml += `<line x1="100%" y1="0%" x2="0%" y2="100%" stroke="${strokeColor}" stroke-width="1" stroke-dasharray="6 6" />`;
+                    linesHtml += `<line x1="50%" y1="0%" x2="50%" y2="100%" stroke="${strokeColor}" stroke-width="1" />`;
+                    linesHtml += `<line x1="0%" y1="50%" x2="100%" y2="50%" stroke="${strokeColor}" stroke-width="1" />`;
+                    linesHtml += `<circle cx="50%" cy="50%" r="36" fill="none" stroke="${strokeColor}" stroke-width="1.2" />`;
+                }
+
+                els.gridSvg.innerHTML = linesHtml;
+            }
+
+            // -----------------------------------------------------------------
+            // 7. SCREEN LOCK MODE FOR TRACING
+            // -----------------------------------------------------------------
+            async function setLockMode(locked) {
+                state.isLocked = locked;
+
+                if (locked) {
+                    els.topHudBar.classList.add('opacity-0', 'pointer-events-none', '-translate-y-6');
+                    els.floatingQuickBar.classList.add('translate-y-full', 'opacity-0');
+                    els.lockedFloatingControls.classList.remove('hidden');
+                    els.lockedFloatingControls.classList.add('flex');
+                    els.overlayBoundingBox.style.opacity = '0';
+                    els.gestureArea.classList.remove('cursor-grab', 'active:cursor-grabbing');
+                    showToast('Overlay Locked — Safe to trace on paper', 'fa-solid fa-lock');
+
+                    // Request Screen Wake Lock if supported so screen stays on while drawing
+                    if ('wakeLock' in navigator) {
+                        try {
+                            state.wakeLock = await navigator.wakeLock.request('screen');
+                        } catch (_) { /* ignore if blocked */ }
+                    }
+                } else {
+                    els.topHudBar.classList.remove('opacity-0', 'pointer-events-none', '-translate-y-6');
+                    els.floatingQuickBar.classList.remove('translate-y-full', 'opacity-0');
+                    els.lockedFloatingControls.classList.add('hidden');
+                    els.lockedFloatingControls.classList.remove('flex');
+                    els.gestureArea.classList.add('cursor-grab', 'active:cursor-grabbing');
+                    flashBoundingBox();
+                    showToast('Overlay Unlocked', 'fa-solid fa-lock-open');
+
+                    if (state.wakeLock) {
+                        try { await state.wakeLock.release(); } catch (_) {}
+                        state.wakeLock = null;
+                    }
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // 8. COMPOSITE SNAPSHOT CAPTURE ENGINE (CAMERA + OVERLAY -> PNG)
+            // -----------------------------------------------------------------
+            function captureSnapshot() {
+                // Visual Shutter Flash
+                els.shutterFlash.classList.remove('hidden', 'camera-flash');
+                void els.shutterFlash.offsetWidth; // trigger reflow
+                els.shutterFlash.classList.add('camera-flash');
+                setTimeout(() => els.shutterFlash.classList.add('hidden'), 380);
+
+                const vw = els.viewportContainer.clientWidth;
+                const vh = els.viewportContainer.clientHeight;
+                const dpr = Math.min(2, window.devicePixelRatio || 1);
+
+                const outCanvas = document.createElement('canvas');
+                outCanvas.width = Math.round(vw * dpr);
+                outCanvas.height = Math.round(vh * dpr);
+                const ctx = outCanvas.getContext('2d');
+                ctx.scale(dpr, dpr);
+
+                // Step A: Render Background (Live Video Frame with object-cover math OR Studio Desk)
+                const showLiveVideo = state.isCameraActive && !state.useStudioFallback && els.cameraVideo.videoWidth > 0;
+                if (showLiveVideo) {
+                    const vidW = els.cameraVideo.videoWidth;
+                    const vidH = els.cameraVideo.videoHeight;
+                    const scale = Math.max(vw / vidW, vh / vidH);
+                    const drawW = vidW * scale;
+                    const drawH = vidH * scale;
+                    const offsetX = (vw - drawW) / 2;
+                    const offsetY = (vh - drawH) / 2;
+
+                    ctx.save();
+                    if (state.facingMode === 'user') {
+                        ctx.translate(vw, 0);
+                        ctx.scale(-1, 1);
+                    }
+                    ctx.drawImage(els.cameraVideo, offsetX, offsetY, drawW, drawH);
+                    ctx.restore();
+                } else {
+                    // Render Studio Desk & Sketchbook Sheet Background onto canvas
+                    ctx.fillStyle = '#27241d';
+                    ctx.fillRect(0, 0, vw, vh);
+
+                    // Radial warm lamp glow
+                    const grad = ctx.createRadialGradient(vw / 2, vh * 0.42, 20, vw / 2, vh * 0.5, Math.max(vw, vh) * 0.7);
+                    grad.addColorStop(0, 'rgba(255, 248, 231, 0.12)');
+                    grad.addColorStop(1, 'rgba(0, 0, 0, 0.65)');
+                    ctx.fillStyle = grad;
+                    ctx.fillRect(0, 0, vw, vh);
+
+                    // Draw simulated A4 paper sheet matching DOM size
+                    const paperEl = els.fallbackStudio.querySelector('.sketch-paper');
+                    if (paperEl) {
+                        const rect = paperEl.getBoundingClientRect();
+                        const vpRect = els.viewportContainer.getBoundingClientRect();
+                        const px = rect.left - vpRect.left;
+                        const py = rect.top - vpRect.top;
+
+                        ctx.save();
+                        ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+                        ctx.shadowBlur = 30;
+                        ctx.shadowOffsetY = 12;
+                        ctx.fillStyle = '#f8f5ec';
+                        ctx.beginPath();
+                        ctx.roundRect(px, py, rect.width, rect.height, 8);
+                        ctx.fill();
+                        ctx.restore();
+                    }
+                }
+
+                // Step B: Composite the Transformed & Filtered Overlay Image (if enabled)
+                if (state.captureWithOverlay && state.opacity > 0) {
+                    ctx.save();
+                    ctx.globalAlpha = state.opacity;
+
+                    // Transform origin is center of viewport + (state.x, state.y)
+                    const centerX = vw / 2 + state.x;
+                    const centerY = vh / 2 + state.y;
+
+                    ctx.translate(centerX, centerY);
+                    ctx.rotate((state.rotation * Math.PI) / 180);
+                    ctx.scale(state.scale * state.flipH, state.scale * state.flipV);
+
+                    const ow = els.overlayCanvas.width;
+                    const oh = els.overlayCanvas.height;
+                    ctx.drawImage(els.overlayCanvas, -ow / 2, -oh / 2, ow, oh);
+                    ctx.restore();
+                }
+
+                // Step C: Subtle Timestamp Watermark in bottom corner
+                ctx.save();
+                ctx.font = '600 11px "JetBrains Mono", monospace';
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+                ctx.fillText('TRACECAM AR LUCIDA', 16, vh - 16);
+                ctx.restore();
+
+                // Show Snapshot Modal
+                const dataUrl = outCanvas.toDataURL('image/png');
+                els.snapshotPreviewImg.src = dataUrl;
+                els.btnDownloadSnapshot.href = dataUrl;
+                els.btnDownloadSnapshot.download = `tracecam-${Date.now()}.png`;
+                els.snapshotMetaMode.textContent = state.captureWithOverlay
+                    ? `MODE: CAMERA + OVERLAY (${Math.round(state.opacity * 100)}%)`
+                    : 'MODE: CLEAN CAMERA ONLY';
+                els.snapshotMetaRes.textContent = `${outCanvas.width} × ${outCanvas.height} PNG`;
+
+                els.snapshotModal.classList.remove('hidden');
+                els.snapshotModal.classList.add('flex');
+            }
+
+            // -----------------------------------------------------------------
+            // 9. UI EVENT BINDINGS
+            // -----------------------------------------------------------------
+            function setupUIEvents() {
+                // Top HUD buttons
+                els.btnGridToggle.addEventListener('click', cycleGridMode);
+                els.btnTorchToggle.addEventListener('click', toggleTorch);
+
+                els.btnSwitchCamera.addEventListener('click', () => {
+                    state.facingMode = state.facingMode === 'environment' ? 'user' : 'environment';
+                    state.useStudioFallback = false;
+                    initCamera();
+                });
+
+                els.btnStudioToggle.addEventListener('click', () => {
+                    if (!state.isCameraActive) {
+                        // Try starting camera if not active
+                        initCamera();
+                    } else {
+                        state.useStudioFallback = !state.useStudioFallback;
+                        updateViewportSourceUI();
+                        showToast(
+                            state.useStudioFallback ? 'Switched to Studio Sketchpad Surface' : 'Switched to Live Camera View',
+                            state.useStudioFallback ? 'fa-solid fa-compass-drafting' : 'fa-solid fa-video'
+                        );
+                    }
+                });
+
+                // Lock / Unlock Screen
+                els.btnLockScreen.addEventListener('click', () => setLockMode(true));
+                els.btnUnlockScreen.addEventListener('click', () => setLockMode(false));
+
+                // Hold to Compare (Temporarily sets overlay opacity to 0%)
+                const startHoldCompare = (e) => {
+                    e.preventDefault();
+                    state.isHoldingCompare = true;
+                    updateOverlayTransform();
+                    els.overlayBoundingBox.style.opacity = '0';
+                };
+                const endHoldCompare = () => {
+                    if (!state.isHoldingCompare) return;
+                    state.isHoldingCompare = false;
+                    updateOverlayTransform();
+                };
+
+                els.btnHoldCompare.addEventListener('mousedown', startHoldCompare);
+                els.btnHoldCompare.addEventListener('touchstart', startHoldCompare, { passive: false });
+                window.addEventListener('mouseup', endHoldCompare);
+                window.addEventListener('touchend', endHoldCompare);
+                window.addEventListener('touchcancel', endHoldCompare);
+
+                // Shutter Button
+                els.btnShutter.addEventListener('click', captureSnapshot);
+
+                // Collapse / Expand Bottom Control Drawer
+                els.btnToggleDrawer.addEventListener('click', () => {
+                    state.isDrawerOpen = !state.isDrawerOpen;
+                    if (state.isDrawerOpen) {
+                        els.controlDrawer.style.maxHeight = '420px';
+                        els.controlDrawer.style.opacity = '1';
+                        els.drawerToggleIcon.style.transform = 'rotate(0deg)';
+                        els.drawerToggleLabel.textContent = 'Hide Panel';
+                    } else {
+                        els.controlDrawer.style.maxHeight = '0px';
+                        els.controlDrawer.style.opacity = '0';
+                        els.drawerToggleIcon.style.transform = 'rotate(180deg)';
+                        els.drawerToggleLabel.textContent = 'Controls';
+                    }
+                });
+
+                // Drawer Navigation Tabs
+                els.drawerTabs.forEach(tabBtn => {
+                    tabBtn.addEventListener('click', () => {
+                        const targetId = tabBtn.dataset.tab;
+                        els.drawerTabs.forEach(b => {
+                            const active = b === tabBtn;
+                            b.className = active
+                                ? 'drawer-tab flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 bg-amber-500 text-zinc-950 shadow'
+                                : 'drawer-tab flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 text-zinc-400 hover:text-zinc-200';
+                        });
+                        els.tabPanes.forEach(pane => {
+                            pane.classList.toggle('hidden', pane.id !== targetId);
+                        });
+                    });
+                });
+
+                // Transform Sliders
+                els.sliderOpacity.addEventListener('input', (e) => {
+                    state.opacity = parseInt(e.target.value, 10) / 100;
+                    updateOverlayTransform();
+                });
+
+                els.sliderScale.addEventListener('input', (e) => {
+                    state.scale = parseInt(e.target.value, 10) / 100;
+                    updateOverlayTransform();
+                    flashBoundingBox();
+                });
+
+                els.sliderRotation.addEventListener('input', (e) => {
+                    state.rotation = parseInt(e.target.value, 10);
+                    updateOverlayTransform();
+                    flashBoundingBox();
+                });
+
+                // Flip & Reset Buttons
+                els.btnFlipH.addEventListener('click', () => {
+                    state.flipH *= -1;
+                    updateOverlayTransform();
+                    showToast('Flipped Horizontally', 'fa-solid fa-arrows-left-right');
+                });
+
+                els.btnFlipV.addEventListener('click', () => {
+                    state.flipV *= -1;
+                    updateOverlayTransform();
+                    showToast('Flipped Vertically', 'fa-solid fa-arrows-up-down');
+                });
+
+                els.btnResetTransform.addEventListener('click', () => {
+                    resetTransform();
+                    showToast('Transform Reset', 'fa-solid fa-rotate-left');
+                });
+
+                // Filter Mode Buttons
+                els.filterBtns.forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        state.filterMode = btn.dataset.filter;
+                        els.filterBtns.forEach(b => {
+                            const active = b === btn;
+                            b.className = active
+                                ? 'filter-btn py-2 px-2.5 rounded-xl border text-xs font-medium flex items-center justify-center gap-1.5 transition bg-amber-500/20 border-amber-500 text-amber-300'
+                                : 'filter-btn py-2 px-2.5 rounded-xl border border-white/10 bg-zinc-800/80 text-xs font-medium text-zinc-300 flex items-center justify-center gap-1.5 transition hover:border-white/25';
+                        });
+
+                        els.sobelControls.classList.toggle('hidden', state.filterMode !== 'sobel');
+                        processAndRenderOverlay();
+                    });
+                });
+
+                // Sobel Edge Sketch Sub-controls
+                els.sliderEdgeSensitivity.addEventListener('input', (e) => {
+                    state.edgeSensitivity = parseInt(e.target.value, 10);
+                    els.valEdgeSensitivity.textContent = `${state.edgeSensitivity}%`;
+                    processAndRenderOverlay();
+                });
+
+                els.btnToggleTransparentPaper.addEventListener('click', () => {
+                    state.transparentPaper = !state.transparentPaper;
+                    els.transparentLinesLabel.textContent = `Clear Background: ${state.transparentPaper ? 'ON' : 'OFF'}`;
+                    els.btnToggleTransparentPaper.className = state.transparentPaper
+                        ? 'flex-1 py-1.5 px-2.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-[11px] font-medium text-amber-200 flex items-center justify-center gap-1.5 transition'
+                        : 'flex-1 py-1.5 px-2.5 rounded-lg bg-zinc-800 border border-white/10 text-[11px] font-medium text-zinc-300 flex items-center justify-center gap-1.5 transition';
+                    processAndRenderOverlay();
+                });
+
+                els.btnToggleInvertLines.addEventListener('click', () => {
+                    state.invertLines = !state.invertLines;
+                    els.invertLinesLabel.textContent = state.invertLines ? 'Ink Color: Light' : 'Ink Color: Dark';
+                    processAndRenderOverlay();
+                });
+
+                // Capture Composite Mode Toggle
+                els.btnCaptureComposite.addEventListener('click', () => {
+                    state.captureWithOverlay = true;
+                    els.btnCaptureComposite.className = 'px-2.5 py-1 rounded-md bg-amber-500 text-zinc-950 font-semibold text-[11px] transition';
+                    els.btnCaptureClean.className = 'px-2.5 py-1 rounded-md text-zinc-400 hover:text-zinc-200 font-medium text-[11px] transition';
+                    showToast('Shutter captures Camera + AR Overlay', 'fa-solid fa-layer-group');
+                });
+
+                els.btnCaptureClean.addEventListener('click', () => {
+                    state.captureWithOverlay = false;
+                    els.btnCaptureClean.className = 'px-2.5 py-1 rounded-md bg-amber-500 text-zinc-950 font-semibold text-[11px] transition';
+                    els.btnCaptureComposite.className = 'px-2.5 py-1 rounded-md text-zinc-400 hover:text-zinc-200 font-medium text-[11px] transition';
+                    showToast('Shutter captures Clean Camera Only', 'fa-solid fa-camera');
+                });
+
+                // Preset Buttons
+                els.presetBtns.forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const preset = btn.dataset.preset;
+                        loadBuiltInPreset(preset);
+                        resetTransform();
+                        showToast(`Loaded ${preset.charAt(0).toUpperCase() + preset.slice(1)} Preset`, 'fa-solid fa-paintbrush');
+                    });
+                });
+
+                // Custom File Upload Input
+                els.fileUploadInput.addEventListener('change', (e) => {
+                    const file = e.target.files && e.target.files[0];
+                    if (!file) return;
+
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                        const img = new Image();
+                        img.onload = () => {
+                            // Scale down large photos to max 1080px for fast real-time Sobel filtering
+                            const maxDim = 1080;
+                            let w = img.naturalWidth || img.width;
+                            let h = img.naturalHeight || img.height;
+                            if (w > maxDim || h > maxDim) {
+                                const ratio = Math.min(maxDim / w, maxDim / h);
+                                w = Math.round(w * ratio);
+                                h = Math.round(h * ratio);
+                            }
+
+                            state.sourceCanvas.width = w;
+                            state.sourceCanvas.height = h;
+                            const sCtx = state.sourceCanvas.getContext('2d');
+                            sCtx.clearRect(0, 0, w, h);
+                            sCtx.drawImage(img, 0, 0, w, h);
+
+                            // Clear active state on preset buttons
+                            els.presetBtns.forEach(b => {
+                                b.classList.remove('border-amber-500/60');
+                                b.classList.add('border-white/10');
+                            });
+
+                            processAndRenderOverlay();
+                            resetTransform();
+                            showToast('Custom Reference Image Loaded!', 'fa-solid fa-check');
+                        };
+                        img.src = ev.target.result;
+                    };
+                    reader.readAsDataURL(file);
+                    e.target.value = '';
+                });
+
+                // Snapshot Modal Close / Retake
+                const closeSnapshotModal = () => {
+                    els.snapshotModal.classList.add('hidden');
+                    els.snapshotModal.classList.remove('flex');
+                };
+                els.btnCloseSnapshotModal.addEventListener('click', closeSnapshotModal);
+                els.btnRetakeSnapshot.addEventListener('click', closeSnapshotModal);
+            }
+
+            // -----------------------------------------------------------------
+            // INITIALIZATION ON LOAD
+            // -----------------------------------------------------------------
+            window.addEventListener('load', () => {
+                setupGestureListeners();
+                setupUIEvents();
+
+                // Load initial default preset (Geometric Portrait) so user can test immediately
+                loadBuiltInPreset('portrait');
+                resetTransform();
+
+                // Initialize live rear camera (gracefully falls back to Studio Sketchpad if denied/desktop)
+                initCamera();
+            });
+        })();
+    </script>
+</body>
+</html>
